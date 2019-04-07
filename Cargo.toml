@@ -1,0 +1,22 @@
+[package]
+name = "stm32l0x3_hal"
+version = "0.1.0"
+authors = ["Craig Bishop <craig@craigjb.com>"]
+edition = "2018"
+
+[dependencies]
+cortex-m = "0.6.0"
+cortex-m-rt = "0.6.8"
+embedded-hal = "0.2.2"
+
+[dependencies.bare-metal]
+version = "0.2.4"
+features = ["const-fn"]
+
+[dependencies.stm32l0x3]
+path = "../stm32l0x3"
+features = ["rt"]
+
+[dependencies.vcell]
+version = "0.1.0"
+features = ["const-fn"]
