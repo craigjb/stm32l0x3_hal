@@ -5,9 +5,13 @@ authors = ["Craig Bishop <craig@craigjb.com>"]
 edition = "2018"
 
 [dependencies]
-cortex-m = "0.6.0"
 cortex-m-rt = "0.6.8"
 embedded-hal = "0.2.2"
+
+[dependencies.cortex-m]
+version = "0.5.8"
+default-features = false
+features = ["inline-asm"]
 
 [dependencies.bare-metal]
 version = "0.2.4"
