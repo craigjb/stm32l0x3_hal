@@ -1,8 +1,8 @@
 //! Reset and Clock Control
 
-use stm32l0x3::{rcc, RCC};
-use crate::flash::{ACR};
+use crate::flash::ACR;
 use crate::time::Hertz;
+use stm32l0x3::{rcc, RCC};
 
 /// Extension trait that constrains the `RCC` peripheral
 pub trait RccExt {
@@ -17,7 +17,8 @@ impl RccExt for RCC {
             apb1: APB1 { _0: () },
             apb2: APB2 { _0: () },
             gpio: GPIO { _0: () },
-            cfgr: CFGR::new()
+            cfgr: CFGR::new(),
+            ccipr: CCIPR::new(),
         }
     }
 }
@@ -34,6 +35,8 @@ pub struct Rcc {
     pub gpio: GPIO,
     /// Clock configuration
     pub cfgr: CFGR,
+    /// Clock configuration
+    pub ccipr: CCIPR,
 }
 
 /// AMBA High-performance Bus (AHB) registers
@@ -104,12 +107,47 @@ impl GPIO {
     }
 }
 
+pub enum LpUsartClock {
+    ApbClock,
+    SystemClock,
+    HSI16Clock,
+    LSEClock,
+}
+
+impl LpUsartClock {
+    fn ccipr_bits(&self) -> (bool, bool) {
+        match self {
+            LpUsartClock::ApbClock => (false, false),
+            LpUsartClock::SystemClock => (false, true),
+            LpUsartClock::HSI16Clock => (true, false),
+            LpUsartClock::LSEClock => (true, true),
+        }
+    }
+}
+
+pub struct CCIPR {}
+
+impl CCIPR {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    pub fn set_lpusart_clock(&mut self, source: LpUsartClock) {
+        let (sel1, sel0) = source.ccipr_bits();
+        unsafe {
+            &(*RCC::ptr())
+                .ccipr
+                .modify(|_, w| w.lpuart1sel1().bit(sel1).lpuart1sel0().bit(sel0));
+        }
+    }
+}
+
 const HSI: u32 = 16_000_000; // Hz
 const USB_PLL_FREQ: u32 = 96_000_000; // Hz
 
 pub enum ExternalHseType {
     Clock,
-    Crystal
+    Crystal,
 }
 
 /// Clock configuration
@@ -130,16 +168,16 @@ impl CFGR {
             hclk: None,
             pclk1: None,
             pclk2: None,
-            sysclk: None
+            sysclk: None,
         }
     }
 
     /// Use an external oscillator instead of HSI
-    /// 
+    ///
     /// With an external clock, max 32 MHz; with an external crystal max 24 MHz
     pub fn external_hse<F>(mut self, ctype: ExternalHseType, freq: F) -> Self
     where
-        F: Into<Hertz>
+        F: Into<Hertz>,
     {
         self.hse = Some((ctype, freq.into().0));
         self
@@ -188,9 +226,9 @@ impl CFGR {
 
     /// Freezes the clock configuration, making it effective
     pub fn freeze(self, acr: &mut ACR) -> Clocks {
-        let (hse_type, hse_freq) = self.hse.map_or(
-            (None, None), |hse| (Some(hse.0), Some(hse.1))
-        );
+        let (hse_type, hse_freq) = self
+            .hse
+            .map_or((None, None), |hse| (Some(hse.0), Some(hse.1)));
         let pll_in_freq = hse_freq.unwrap_or(HSI);
         let pll_freq = if self.usb_pll {
             USB_PLL_FREQ
@@ -198,16 +236,14 @@ impl CFGR {
             2 * self.sysclk.unwrap_or(hse_freq.unwrap_or(HSI))
         };
 
-        let sysclk_freq = self.sysclk.unwrap_or(
-            if pll_freq > 96_000_000 {
-                pll_freq / 4
-            } else if pll_freq > 64_000_000 {
-                pll_freq / 3
-            } else {
-                pll_freq / 2
-            }
-        );
-        
+        let sysclk_freq = self.sysclk.unwrap_or(if pll_freq > 96_000_000 {
+            pll_freq / 4
+        } else if pll_freq > 64_000_000 {
+            pll_freq / 3
+        } else {
+            pll_freq / 2
+        });
+
         let pll_mul = pll_freq / pll_in_freq;
         let pll_div = pll_freq / sysclk_freq;
 
@@ -224,11 +260,11 @@ impl CFGR {
                 24 => 0b0110,
                 32 => 0b0111,
                 48 => 0b1000,
-                _ => unreachable!()
+                _ => unreachable!(),
             };
             let div: u8 = match pll_div {
-                m @ 2...4 => m as u8 - 1,
-                _ => unreachable!()
+                m @ 2..=4 => m as u8 - 1,
+                _ => unreachable!(),
             };
             Some((mul, div))
         };
@@ -239,17 +275,18 @@ impl CFGR {
             _ => {}
         };
 
-        let hpre_bits = self.hclk
+        let hpre_bits = self
+            .hclk
             .map(|hclk| match sysclk_freq / hclk {
                 0 => unreachable!(),
                 1 => 0b0111,
                 2 => 0b1000,
-                3...5 => 0b1001,
-                6...11 => 0b1010,
-                12...39 => 0b1011,
-                40...95 => 0b1100,
-                96...191 => 0b1101,
-                192...383 => 0b1110,
+                3..=5 => 0b1001,
+                6..=11 => 0b1010,
+                12..=39 => 0b1011,
+                40..=95 => 0b1100,
+                96..=191 => 0b1101,
+                192..=383 => 0b1110,
                 _ => 0b1111,
             })
             .unwrap_or(0b0111);
@@ -261,33 +298,35 @@ impl CFGR {
             _ => {}
         };
 
-        let ppre1_bits: u8 = self.pclk1
+        let ppre1_bits: u8 = self
+            .pclk1
             .map(|pclk1| match hclk / pclk1 {
                 0 => unreachable!(),
                 1 => 0b011,
                 2 => 0b100,
-                3...5 => 0b101,
-                6...11 => 0b110,
+                3..=5 => 0b101,
+                6..=11 => 0b110,
                 _ => 0b111,
             })
             .unwrap_or(0b011);
 
         let ppre1 = 1 << (ppre1_bits - 0b011);
         let pclk1 = hclk / ppre1 as u32;
-        
+
         match hse_type {
             Some(ExternalHseType::Clock) => assert!(pclk1 <= 32_000_000),
             Some(ExternalHseType::Crystal) => assert!(pclk1 <= 24_000_000),
             _ => {}
         };
 
-        let ppre2_bits: u8 = self.pclk2
+        let ppre2_bits: u8 = self
+            .pclk2
             .map(|pclk2| match hclk / pclk2 {
                 0 => unreachable!(),
                 1 => 0b011,
                 2 => 0b100,
-                3...5 => 0b101,
-                6...11 => 0b110,
+                3..=5 => 0b101,
+                6..=11 => 0b110,
                 _ => 0b111,
             })
             .unwrap_or(0b011);
@@ -302,20 +341,18 @@ impl CFGR {
         };
 
         // Adjust flash wait states
-        unsafe {
-            acr.acr().write(|w| {
-                // In Range 1, frequencies 16 MHz and below don't require wait states
-                if sysclk_freq <= 16_000_000 {
-                    w.latency().clear_bit()
-                } else {
-                    w.latency().set_bit()
-                }
-            });
-        }
+        acr.acr().write(|w| {
+            // In Range 1, frequencies 16 MHz and below don't require wait states
+            if sysclk_freq <= 16_000_000 {
+                w.latency().clear_bit()
+            } else {
+                w.latency().set_bit()
+            }
+        });
 
         let hse_en = match hse_type {
             Some(_) => true,
-            None => false
+            None => false,
         };
 
         let rcc = unsafe { &*RCC::ptr() };
@@ -323,7 +360,7 @@ impl CFGR {
             // use PLL as source
             // turn off PLL and wait until it's not ready
             rcc.cr.write(|w| w.pllon().bit(false));
-            while rcc.cr.read().pllrdy().bit() { }
+            while rcc.cr.read().pllrdy().bit() {}
 
             rcc.cfgr.write(|w| unsafe {
                 w.pllmul()
@@ -335,9 +372,12 @@ impl CFGR {
             });
 
             rcc.cr.write(|w| {
-                w.pllon().set_bit()
-                    .hsi16on().bit(!hse_en)
-                    .hseon().bit(hse_en)
+                w.pllon()
+                    .set_bit()
+                    .hsi16on()
+                    .bit(!hse_en)
+                    .hseon()
+                    .bit(hse_en)
             });
             if hse_en {
                 while !rcc.cr.read().hserdy().bit() {}
@@ -358,10 +398,8 @@ impl CFGR {
                     .bits(0b11)
             });
         } else {
-            rcc.cr.write(|w| {
-                w.hsi16on().bit(!hse_en)
-                    .hseon().bit(hse_en)
-            });
+            rcc.cr
+                .write(|w| w.hsi16on().bit(!hse_en).hseon().bit(hse_en));
 
             if hse_en {
                 while !rcc.cr.read().hserdy().bit() {}
