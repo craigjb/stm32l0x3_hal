@@ -19,7 +19,7 @@ version = "0.2.5"
 features = ["const-fn"]
 
 [dependencies.stm32l0x3]
-path = "../stm32l0x3"
+git = "https://github.com/craigjb/stm32l0x3.git"
 features = ["rt"]
 
 [dependencies.vcell]
