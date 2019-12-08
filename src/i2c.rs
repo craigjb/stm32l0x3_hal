@@ -1,13 +1,14 @@
 //! Inter-Integrated Circuit (I2C) bus
 
-use cast::u8;
-use stm32l0x3::{I2C1};
+use stm32l0x3::{I2C1, I2C3};
 
-use gpio::gpiob::{PB8, PB9};
-use gpio::AF4;
-use hal::blocking::i2c::{Write, WriteRead};
-use rcc::{APB1, Clocks};
-use time::Hertz;
+use crate::gpio::gpioa::{PA10, PA9};
+use crate::gpio::gpiob::{PB6, PB7, PB8, PB9};
+use crate::gpio::{AF1, AF4, AF6};
+use crate::rcc::{Clocks, APB1};
+use crate::time::Hertz;
+use core::cmp;
+use embedded_hal::blocking::i2c::{Write, WriteRead};
 
 /// I2C error
 #[derive(Debug)]
@@ -31,8 +32,12 @@ pub unsafe trait SclPin<I2C> {}
 /// SDA pin -- DO NOT IMPLEMENT THIS TRAIT
 pub unsafe trait SdaPin<I2C> {}
 
+unsafe impl SclPin<I2C1> for PA9<AF6> {}
+unsafe impl SclPin<I2C1> for PB6<AF1> {}
 unsafe impl SclPin<I2C1> for PB8<AF4> {}
 
+unsafe impl SdaPin<I2C1> for PA10<AF6> {}
+unsafe impl SdaPin<I2C1> for PB7<AF1> {}
 unsafe impl SdaPin<I2C1> for PB9<AF4> {}
 
 /// I2C peripheral operating in master mode
@@ -68,20 +73,20 @@ macro_rules! hal {
                     i2c: $I2CX,
                     pins: (SCL, SDA),
                     freq: F,
-                    clocks: Clocks,
+                    clocks: &Clocks,
                     apb1: &mut APB1,
                 ) -> Self where
                     F: Into<Hertz>,
                     SCL: SclPin<$I2CX>,
                     SDA: SdaPin<$I2CX>,
                 {
-                    apb1.enr().modify(|_, w| w.$i2cXen().enabled());
+                    apb1.enr().modify(|_, w| w.$i2cXen().set_bit());
                     apb1.rstr().modify(|_, w| w.$i2cXrst().set_bit());
                     apb1.rstr().modify(|_, w| w.$i2cXrst().clear_bit());
 
                     let freq = freq.into().0;
 
-                    assert!(freq <= 1_000_000);
+                    assert!(freq <= 100_000);
 
                     // TODO review compliance with the timing requirements of I2C
                     // t_I2CCLK = 1 / PCLK1
@@ -92,54 +97,15 @@ macro_rules! hal {
                     // t_SYNC1 + t_SYNC2 > 4 * t_I2CCLK
                     // t_SCL ~= t_SYNC1 + t_SYNC2 + t_SCLL + t_SCLH
                     let i2cclk = clocks.pclk1().0;
-                    let ratio = i2cclk / freq - 4;
-                    let (presc, scll, sclh, sdadel, scldel) = if freq >= 100_000 {
-                        // fast-mode or fast-mode plus
-                        // here we pick SCLL + 1 = 2 * (SCLH + 1)
-                        let presc = ratio / 387;
 
-                        let sclh = ((ratio / (presc + 1)) - 3) / 3;
-                        let scll = 2 * (sclh + 1) - 1;
+                    // // standard-mode only
+                    let presc = 1;
+                    let scll = ((((i2cclk >> presc) >> 1) / freq) - 1) as u8;
+                    let sclh = scll - 4;
+                    let sdadel = 2;
+                    let scldel = 4;
 
-                        let (sdadel, scldel) = if freq > 400_000 {
-                            // fast-mode plus
-                            let sdadel = 0;
-                            let scldel = i2cclk / 4_000_000 / (presc + 1) - 1;
-
-                            (sdadel, scldel)
-                        } else {
-                            // fast-mode
-                            let sdadel = i2cclk / 8_000_000 / (presc + 1);
-                            let scldel = i2cclk / 2_000_000 / (presc + 1) - 1;
-
-                            (sdadel, scldel)
-                        };
-
-                        (presc, scll, sclh, sdadel, scldel)
-                    } else {
-                        // standard-mode
-                        // here we pick SCLL = SCLH
-                        let presc = ratio / 514;
-
-                        let sclh = ((ratio / (presc + 1)) - 2) / 2;
-                        let scll = sclh;
-
-                        let sdadel = i2cclk / 2_000_000 / (presc + 1);
-                        let scldel = i2cclk / 800_000 / (presc + 1) - 1;
-
-                        (presc, scll, sclh, sdadel, scldel)
-                    };
-
-                    let presc = u8(presc).unwrap();
-                    assert!(presc < 16);
-                    let scldel = u8(scldel).unwrap();
-                    assert!(scldel < 16);
-                    let sdadel = u8(sdadel).unwrap();
-                    assert!(sdadel < 16);
-                    let sclh = u8(sclh).unwrap();
-                    let scll = u8(scll).unwrap();
-
-                    // Configure for "fast mode" (400 KHz)
+                    // Configure for "standard mode" (100 KHz)
                     i2c.timingr.write(|w| unsafe {
                         w.presc()
                             .bits(presc)
@@ -172,10 +138,13 @@ macro_rules! hal {
                     // TODO support transfers of more than 255 bytes
                     assert!(bytes.len() < 256 && bytes.len() > 0);
 
+                    // TODO do we have to explicitly wait here if the bus is busy (e.g. another
+                    // master is communicating)?
+
                     // START and prepare to send `bytes`
-                    self.i2c.cr2.write(|w| {
-                        w.sadd1()
-                            .bits(addr)
+                    self.i2c.cr2.write(|w| unsafe {
+                        w.sadd()
+                            .bits(addr as u16)
                             .rd_wrn()
                             .clear_bit()
                             .nbytes()
@@ -186,17 +155,19 @@ macro_rules! hal {
                             .set_bit()
                     });
 
-                    for byte in bytes {
+                    for byte in bytes.iter() {
                         // Wait until we are allowed to send data (START has been ACKed or last byte
                         // when through)
                         busy_wait!(self.i2c, txis);
 
                         // put byte on the wire
-                        self.i2c.txdr.write(|w| w.txdata().bits(*byte));
+                        self.i2c.txdr.write(|w| unsafe {
+                            w.txdata().bits(*byte)
+                        });
                     }
 
-                    // Wait until the last transmission is finished ???
-                    // busy_wait!(self.i2c, busy);
+                    // Wait until the last transmission is finished
+                    //busy_wait!(self.i2c, tc);
 
                     // automatic STOP
 
@@ -221,9 +192,9 @@ macro_rules! hal {
                     // master is communicating)?
 
                     // START and prepare to send `bytes`
-                    self.i2c.cr2.write(|w| {
-                        w.sadd1()
-                            .bits(addr)
+                    self.i2c.cr2.write(|w| unsafe {
+                        w.sadd()
+                            .bits(addr as u16)
                             .rd_wrn()
                             .clear_bit()
                             .nbytes()
@@ -234,22 +205,24 @@ macro_rules! hal {
                             .clear_bit()
                     });
 
-                    for byte in bytes {
+                    for byte in bytes.iter() {
                         // Wait until we are allowed to send data (START has been ACKed or last byte
                         // when through)
                         busy_wait!(self.i2c, txis);
 
                         // put byte on the wire
-                        self.i2c.txdr.write(|w| w.txdata().bits(*byte));
+                        self.i2c.txdr.write(|w| unsafe {
+                            w.txdata().bits(*byte)
+                        });
                     }
 
                     // Wait until the last transmission is finished
                     busy_wait!(self.i2c, tc);
 
                     // reSTART and prepare to receive bytes into `buffer`
-                    self.i2c.cr2.write(|w| {
-                        w.sadd1()
-                            .bits(addr)
+                    self.i2c.cr2.write(|w| unsafe {
+                        w.sadd()
+                            .bits(addr as u16)
                             .rd_wrn()
                             .set_bit()
                             .nbytes()
@@ -260,7 +233,7 @@ macro_rules! hal {
                             .set_bit()
                     });
 
-                    for byte in buffer {
+                    for byte in buffer.iter_mut() {
                         // Wait until we have received something
                         busy_wait!(self.i2c, rxne);
 
@@ -278,5 +251,5 @@ macro_rules! hal {
 
 hal! {
     I2C1: (i2c1, i2c1en, i2c1rst),
-    I2C2: (i2c2, i2c2en, i2c2rst),
+    I2C3: (i2c3, i2c3en, i2c3rst),
 }

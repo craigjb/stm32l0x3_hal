@@ -4,8 +4,11 @@
 
 pub use stm32l0x3;
 
-pub mod rcc;
-pub mod gpio;
-pub mod prelude;
-pub mod time;
+pub mod exti;
 pub mod flash;
+pub mod gpio;
+pub mod i2c;
+pub mod lpusart;
+pub mod prelude;
+pub mod rcc;
+pub mod time;
