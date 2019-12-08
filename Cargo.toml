@@ -5,16 +5,17 @@ authors = ["Craig Bishop <craig@craigjb.com>"]
 edition = "2018"
 
 [dependencies]
-cortex-m-rt = "0.6.8"
-embedded-hal = "0.2.2"
+cortex-m-rt = "0.6.11"
+
+[dependencies.embedded-hal]
+version = "0.2.3"
+features = ["unproven"]
 
 [dependencies.cortex-m]
-version = "0.5.8"
-default-features = false
-features = ["inline-asm"]
+version = "0.6.1"
 
 [dependencies.bare-metal]
-version = "0.2.4"
+version = "0.2.5"
 features = ["const-fn"]
 
 [dependencies.stm32l0x3]
@@ -22,5 +23,5 @@ path = "../stm32l0x3"
 features = ["rt"]
 
 [dependencies.vcell]
-version = "0.1.0"
+version = "0.1.2"
 features = ["const-fn"]
